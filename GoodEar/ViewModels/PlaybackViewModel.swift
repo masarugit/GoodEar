@@ -25,7 +25,7 @@ class PlaybackViewModel: ObservableObject {
     @Published var isAutoplayOn = false
 
     // segments：すべてのセクションデータを保持します。初期化時に渡される配列です。
-    private let segments: [TranscriptSegment]
+    let segments: [TranscriptSegment]
     // player：AVPlayer インスタンス。音声ファイルを再生・制御します。
     private let player: AVPlayer
 
@@ -122,6 +122,31 @@ class PlaybackViewModel: ObservableObject {
         if wasPlaying { play() }
     }
 
+    // PlaybackViewModel.swift
+
+    func seekToPreviousSentence(sentenceSegments: [TranscriptSegment]) {
+            guard let idx = sentenceSegments.firstIndex(where: { $0.start <= currentTime && currentTime < $0.end }) else { return }
+            let currentSentence = sentenceSegments[idx]
+            if currentTime > currentSentence.start + 0.3 {
+                seek(to: currentSentence.start)
+                if isPlaying { play() }
+            } else if idx > 0 {
+                let prevSentence = sentenceSegments[idx - 1]
+                seek(to: prevSentence.start)
+                if isPlaying { play() }
+            }
+        }
+    
+    func seekToNextSentence(sentenceSegments: [TranscriptSegment]) {
+            guard let idx = sentenceSegments.firstIndex(where: { $0.start <= currentTime && currentTime < $0.end }) else { return }
+            if idx + 1 < sentenceSegments.count {
+                let nextSentence = sentenceSegments[idx + 1]
+                seek(to: nextSentence.start)
+                if isPlaying { play() }
+            }
+        }
+
+    
     // MARK: - 内部ヘルパー
 
     /// セクションを切り替えて自動再生する場合などに使います。
@@ -132,7 +157,7 @@ class PlaybackViewModel: ObservableObject {
     }
 
     /// 指定秒数にシーク（移動）します。currentTime も更新。
-    private func seek(to time: TimeInterval) {
+    func seek(to time: TimeInterval) {
         let cm = CMTime(seconds: time, preferredTimescale: 600)
         player.seek(to: cm)
         currentTime = time

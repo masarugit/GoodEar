@@ -1,5 +1,3 @@
-// SectionListView.swift
-
 import SwiftUI
 
 struct SectionListView: View {
@@ -18,11 +16,8 @@ struct SectionListView: View {
                     showPlayback = true
                 } label: {
                     HStack {
-                        Text(
-                            String(format: "%03d", idx + 1)
-                            + "　"
-                            + "\(formatTime(seg.start))–\(formatTime(seg.end))"
-                        )
+                        Text(String(format: "%03d", idx + 1) + "　" +
+                             "\(formatTime(seg.start))–\(formatTime(seg.end))")
                         Spacer()
                         Image(systemName: viewModel.isPlayed(seg) ? "ear.fill" : "ear")
                             .foregroundColor(viewModel.isPlayed(seg) ? .primary : .secondary)
@@ -30,24 +25,21 @@ struct SectionListView: View {
                 }
             }
         }
+        // SectionListView.swift の sheet クロージャ
         .sheet(isPresented: $showPlayback) {
-            if let seg = viewModel.selectedSegment {
-                // rawSegments を SRT または JSON で読み込む
-                let raw = viewModel.filePair.textURL.pathExtension.lowercased() == "srt"
-                    ? SRTParsingService.loadSegments(from: viewModel.filePair.textURL)
-                    : JSONParsingService.loadRawSegments(from: viewModel.filePair.textURL)
-                
-                PlaybackModalView(
-                    segments:    viewModel.segments,
-                    rawSegments: raw,
-                    audioURL:    viewModel.filePair.audioURL,
-                    initial:     seg,
-                    onPlay:      { played in
-                        viewModel.markPlayed(played)
-                    }
-                )
+          if let seg = viewModel.selectedSegment {
+            // sentenceSegments ではなく、allSentenceSegments を渡す
+            PlaybackModalView(
+              segments: viewModel.segments,
+              allSentenceSegments: viewModel.allSentenceSegments,
+              audioURL: viewModel.filePair.audioURL,
+              initial: seg
+            ) { played in
+              viewModel.markPlayed(played)
             }
+          }
         }
+
     }
 
     private func formatTime(_ t: TimeInterval) -> String {

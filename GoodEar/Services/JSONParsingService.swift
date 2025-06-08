@@ -1,12 +1,11 @@
 // Services/JSONParsingService.swift
 
-// Foundation をインポートすると、URL や Data、JSONDecoder、TimeInterval など
-// Swift の基本機能が使えるようになります。
 import Foundation
 
 /// JSONParsingService は、Whisper が出力する JSON
-/// （TranscriptSegment の配列）を読み込んだり、
-/// それを「話し声の切れ目」でグループ化して任意の長さに分割する処理を提供する構造体です。
+/// （TranscriptSegment の配列）や SRT などの生セグメントを読み込み、
+/// それを「文末ピリオド単位」や「時間閾値単位」でグループ化して
+/// セクションを生成するユーティリティです。
 struct JSONParsingService {
     //====================================================================
     // 既存の JSON ファイル読み込みメソッド
@@ -16,55 +15,37 @@ struct JSONParsingService {
     /// - Returns: JSON をデコードした TranscriptSegment の配列。失敗時は空配列。
     static func loadRawSegments(from url: URL) -> [TranscriptSegment] {
         do {
-            // ファイルの中身をバイト列として読み込む
             let data = try Data(contentsOf: url)
-            // JSONDecoder を使って [TranscriptSegment] に変換
             return try JSONDecoder().decode([TranscriptSegment].self, from: data)
         } catch {
-            // エラーが発生したらコンソールにログを出力し、空配列を返す
             print("🔴 JSONParsingService.parse error:", error)
             return []
         }
     }
 
     //====================================================================
-    // セグメントを話し声の区切れ目でまとめ、累積時間で新しいセクションを作るメソッド
+    // 既存の「話し声の区切れ目＋累積時間」でチャンク化するメソッド
     //====================================================================
     /// Whisper JSON から得た生のセグメントを、話の区切れ目で区切りつつ、
-    /// 累積時間が `targetSize` (デフォルト25秒) を超えたら
+    /// 累積時間が targetSize (デフォルト 25 秒) を超えたら
     /// 新しいセクションを開始して結果を返します。
-    ///
-    /// - Parameters:
-    ///   - segments: Whisper JSON をデコードして得られた、元のセグメント配列
-    ///   - targetSize: 1 セクションあたりの目安となる最大秒数（デフォルト 25 秒）
-    /// - Returns: 分割後のセクション配列
     static func chunkSegments(
         _ segments: [TranscriptSegment],
         targetSize: TimeInterval = 25
     ) -> [TranscriptSegment] {
-        // 最終的に返すセクションを格納する配列
         var result: [TranscriptSegment] = []
-        // 現在まとめているセグメント群
         var currentGroup: [TranscriptSegment] = []
-        // currentGroup の開始時刻を保持する変数
         var groupStart: TimeInterval = 0
 
-        // (1) すべての元セグメントを順番に処理
         for seg in segments {
             if currentGroup.isEmpty {
-                // currentGroup が空の場合：新しいセクションの開始
                 groupStart = seg.start
                 currentGroup.append(seg)
             } else {
-                // 現在のセクション開始から、次のセグメントの終了までの累積時間を計算
-                let potentialEnd = seg.end
-                let accumulated = potentialEnd - groupStart
-
+                let accumulated = seg.end - groupStart
                 if accumulated <= targetSize {
-                    // (2a) 累積が targetSize 以下なら同じセクションに追加
                     currentGroup.append(seg)
                 } else {
-                    // (2b) targetSize を超えたら、currentGroup をひとつのセクションとして確定
                     let text = currentGroup.map(\.text).joined(separator: " ")
                     let start = groupStart
                     let end   = currentGroup.last!.end
@@ -73,14 +54,12 @@ struct JSONParsingService {
                                           end: end,
                                           text: text)
                     )
-                    // 新しいセクションを開始
                     groupStart = seg.start
                     currentGroup = [seg]
                 }
             }
         }
 
-        // (3) ループ後にまだ残っているグループを最後のセクションとして追加
         if !currentGroup.isEmpty {
             let text = currentGroup.map(\.text).joined(separator: " ")
             let start = currentGroup.first!.start
@@ -92,8 +71,130 @@ struct JSONParsingService {
             )
         }
 
-        // デバッグ用ログ：最終的に何セクションに分割されたかを出力
         print("🔹 chunked into \(result.count) sections by speech breaks")
         return result
     }
+
+    //====================================================================
+    // 新規：文末ピリオドでまとめたセグメントを作成するメソッド
+    //====================================================================
+    /// Whisper/SRT の生セグメントを受け取り、
+    /// テキストがピリオドで終わるまでつなげて１つの文単位の
+    /// TranscriptSegment を作成して返します。
+    ///
+    /// - Parameter segments: 生の TranscriptSegment 配列
+    /// - Returns: 文単位にまとめられた TranscriptSegment 配列
+    // 文末ピリオド or クエスチョンでsentence単位で区切る
+        static func makeSentenceSegments(from segments: [TranscriptSegment]) -> [TranscriptSegment] {
+            var result: [TranscriptSegment] = []
+            var currentGroup: [TranscriptSegment] = []
+
+            for seg in segments {
+                currentGroup.append(seg)
+                let trimmed = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.hasSuffix(".") || trimmed.hasSuffix("?") {
+                    let text = currentGroup.map(\.text).joined(separator: " ")
+                    let start = currentGroup.first!.start
+                    let end   = currentGroup.last!.end
+                    result.append(
+                        TranscriptSegment(start: start, end: end, text: text)
+                    )
+                    currentGroup.removeAll()
+                }
+            }
+            if !currentGroup.isEmpty {
+                let text = currentGroup.map(\.text).joined(separator: " ")
+                let start = currentGroup.first!.start
+                let end   = currentGroup.last!.end
+                result.append(
+                    TranscriptSegment(start: start, end: end, text: text)
+                )
+            }
+
+            print("🔹 split into \(result.count) sentence segments by period/question")
+            return result
+        }
+
+
+    //====================================================================
+    // 新規：SentenceSegment を時間閾値でチャンク化するメソッド
+    //====================================================================
+    /// 文単位にまとめられた TranscriptSegment を受け取り、
+    /// 累積時間が targetSize（デフォルト 45 秒）を超えたら
+    /// 新しいセクションを開始してまとめます。
+    ///
+    /// - Parameters:
+    ///   - sentences: makeSentenceSegments で生成された文単位のセグメント
+    ///   - targetSize: 1 セクションあたりの目安となる最大秒数
+    /// - Returns: まとまり時間がおおむね targetSize のセクション配列
+    // 「文単位でまとめたsentenceSegments」を、累積時間30秒ごとにセクション化
+    static func chunkSentences(
+        _ sentences: [TranscriptSegment],
+        targetSize: TimeInterval = 30
+    ) -> [TranscriptSegment] {
+        var result: [TranscriptSegment] = []
+        var currentGroup: [TranscriptSegment] = []
+
+        for seg in sentences {
+            currentGroup.append(seg)
+            let groupStart = currentGroup.first!.start
+            let groupEnd   = currentGroup.last!.end
+            let accumulated = groupEnd - groupStart
+
+            // targetSizeを超えたら（超えた後でFlush）
+            if accumulated >= targetSize {
+                // 今追加したsegを含めてFlush
+                let text = currentGroup.map(\.text).joined(separator: " ")
+                result.append(
+                    TranscriptSegment(start: groupStart, end: groupEnd, text: text)
+                )
+                currentGroup.removeAll()
+            }
+        }
+
+        // 残りを最後のセクションとして追加
+        if !currentGroup.isEmpty {
+            let groupStart = currentGroup.first!.start
+            let groupEnd   = currentGroup.last!.end
+            let text = currentGroup.map(\.text).joined(separator: " ")
+            result.append(
+                TranscriptSegment(start: groupStart, end: groupEnd, text: text)
+            )
+        }
+
+        print("🔹 chunked sentences into \(result.count) sections (~\(targetSize)s each)")
+        return result
+    }
+
+    
+    // JSONParsingService.swift に新規追加
+    static func chunkSentencesToSectionChunks(
+        _ sentences: [TranscriptSegment],
+        targetSize: TimeInterval = 30
+    ) -> [[TranscriptSegment]] {
+        var result: [[TranscriptSegment]] = []
+        var currentGroup: [TranscriptSegment] = []
+        var groupStart: TimeInterval = 0
+
+        for seg in sentences {
+            if currentGroup.isEmpty {
+                groupStart = seg.start
+                currentGroup.append(seg)
+            } else {
+                let accumulated = seg.end - groupStart
+                if accumulated <= targetSize {
+                    currentGroup.append(seg)
+                } else {
+                    result.append(currentGroup)
+                    groupStart = seg.start
+                    currentGroup = [seg]
+                }
+            }
+        }
+        if !currentGroup.isEmpty {
+            result.append(currentGroup)
+        }
+        return result
+    }
+
 }
